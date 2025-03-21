@@ -41,13 +41,13 @@ async fn listen(port: u16) -> io::Result<()> {
         let (socket, peer) = connection.unwrap();
         let new_rx = broadcast_tx.subscribe();
         let new_tx = broadcast_tx.clone();
+        let conn = Connection {
+            client_addr: peer,
+            rx: new_rx,
+            tx: new_tx,
+        };
         tokio::spawn(async move {
             println!("connected {} {}", peer.ip(), peer.port());
-            let conn = Connection {
-                client_addr: peer,
-                rx: new_rx,
-                tx: new_tx,
-            };
             process(socket, conn).await;
         });
     }
@@ -71,17 +71,20 @@ async fn process(mut stream: TcpStream, mut conn: Connection) {
     let (read, mut write) = stream.split();
     let mut reader = tokio::io::BufReader::new(read);
 
-    let mut buf = String::new();
     loop {
+        let mut buf = String::new();
         let read_future = reader.read_line(&mut buf);
         let broadcast_future = conn.rx.recv();
 
         select! {
-            _ = read_future => {
+            read_result = read_future => {
                 let message = BroadcastMessage {
                     origin: conn.client_addr.port(),
-                    message: buf.clone() // todo: buf does not escape
+                    message: buf
                 };
+                if let Ok(0) = read_result {
+                    break;
+                }
                 print!("message {} {}", message.origin, message.message);
                 conn.tx.send(message).expect("failed write");
                 send_message_ack(&mut write).await.expect("failed ack");
@@ -101,8 +104,6 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let port: u16 = args
         .get(1)
-        .expect("Missing port number")
-        .parse()
-        .expect("Invalid port number");
+        .map_or(8080, |x| x.parse().expect("invalid port number"));
     listen(port).await.unwrap();
 }
